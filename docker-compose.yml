@@ -1,0 +1,43 @@
+version: "3.9"
+
+# Levanta los dos microservicios del backend localmente (modo demo, sin Azure/AWS).
+# Requiere haber empaquetado antes:
+#   mvn clean package
+#   docker compose up --build
+services:
+  servicio-productos:
+    build:
+      context: ./servicio-productos
+    container_name: pedidos360-servicio-productos
+    ports:
+      - "8081:8080"
+    environment:
+      SERVER_PORT: "8080"
+      CORS_ALLOWED_ORIGINS: "http://localhost:5173"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/actuator/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  servicio-pedidos:
+    build:
+      context: ./servicio-pedidos
+    container_name: pedidos360-servicio-pedidos
+    ports:
+      - "8082:8080"
+    environment:
+      SERVER_PORT: "8080"
+      CORS_ALLOWED_ORIGINS: "http://localhost:5173"
+      # Al conectar Azure, activa con JWT_ENABLED=true y setea jwks/emisor/audiencias.
+      JWT_ENABLED: "false"
+      JWT_JWKS_URI: ""
+      JWT_ISSUER_URI: ""
+      JWT_AUDIENCES: ""
+      JWT_REQUIRED_SCOPES: "orders.write"
+      JWT_REQUIRED_ROLES: ""
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/actuator/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
