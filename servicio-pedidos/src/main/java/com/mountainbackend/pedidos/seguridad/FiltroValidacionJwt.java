@@ -88,7 +88,9 @@ public class FiltroValidacionJwt extends OncePerRequestFilter {
 	@Override
 	protected boolean shouldNotFilter(HttpServletRequest request) {
 		boolean algunValidadorActivo = propiedades.isHabilitado() || propiedades.isLocalHabilitado();
-		return !algunValidadorActivo || "OPTIONS".equalsIgnoreCase(request.getMethod());
+		return !algunValidadorActivo
+			|| "OPTIONS".equalsIgnoreCase(request.getMethod())
+			|| request.getRequestURI().equals("/actuator/health");
 	}
 
 	@Override
