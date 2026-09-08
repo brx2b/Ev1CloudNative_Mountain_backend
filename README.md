@@ -1,230 +1,206 @@
-# Pedidos360 — Backend Cloud-Native Multi-Nube
+# SummitLab - Backend Cloud-Native
 
-Repositorio desarrollado por Brian Aravena y Fabián Reyes.
+Backend de la tienda de equipamiento de montaña SummitLab. Es un proyecto Maven multi-módulo con cuatro servicios Spring Boot y un gateway HTTP.
 
-Backend de **Pedidos360** (tienda de equipamiento de montaña "SummitLab"), migrado a una
-arquitectura Cloud-Native de microservicios:
+## Propósito y flujo
 
-| Microservicio | Rutas principales | Puerto local | Seguridad |
-|---|---|---|---|
-| `servicio-productos` | `/products` (GET) | 8081 | Pública (catálogo) |
-| `servicio-pedidos` | `/orders` (POST/GET) | 8082 | JWT local HS256 + Azure JWKS (opcional) |
-| `servicio-usuarios` | `/auth/registro`, `/auth/ingreso`, `/users` | 8083 | Pública (registro/login) |
-| `servicio-gateway` | **Entry point único** — enruta todo a los MS internos | 9000 | Propaga Authorization al MS destino |
+El frontend solo debe llamar al gateway. Las URLs internas se configuran en el gateway mediante variables de entorno:
 
-**Registro de endpoints**: cada servicio expone `GET /actuator` + `GET /api/endpoints` con
-un inventario JSON de sus rutas. El gateway consolida todos en `GET /api/endpoints`.
-
-> El código interno (paquetes, clases, variables) está en **español**.
-> Los nombres de los **campos JSON** (`name`, `items`, `totals`, `productId`, …) se
-> mantienen en inglés porque son el **contrato que consume el frontend** y no deben romperse.
->
-> 📌 **Documento de continuación**: `NOTAS.md` tiene el estado completo del proyecto
-> (frontend + backend) y los pasos detallados para terminar la conexión.
-
----
-
-## 1. Estructura
-
-```
-servicio-productos/    Microservicio de Productos (catálogo semilla con los 8 mock del front)
-servicio-pedidos/      Microservicio de Carrito/Órdenes (JWT local + Azure JWKS opcional)
-servicio-usuarios/     Microservicio de Registro/Login (emite JWT HS256 propio)
-servicio-gateway/      API Gateway / Proxy (entry point único, enruta y consolida endpoints)
-docker-compose.yml     Levanta los 4 microservicios
-NOTAS.md               Notas de continuación del proyecto completo
+```text
+Frontend -> gateway:9000 -> productos:8080
+                         -> usuarios:8080
+                         -> pedidos:8080
 ```
 
-## 2. Cómo compilar y correr
+En producción, AWS API Gateway puede ser el punto público y reemplazar al gateway Spring, pero el frontend sigue usando un único endpoint público.
 
-Requisitos: JDK 17 o superior y Maven (se usa el wrapper `mvnw`).
+| Servicio             | Función            | Puerto local | Rutas principales                           |
+| -------------------- | ------------------ | -----------: | ------------------------------------------- |
+| `servicio-productos` | Catálogo           |         8081 | `GET /products`, `GET /products/{id}`       |
+| `servicio-pedidos`   | Pedidos            |         8082 | `POST/GET /orders`                          |
+| `servicio-usuarios`  | Registro e ingreso |         8083 | `POST /auth/registro`, `POST /auth/ingreso` |
+| `servicio-gateway`   | Enrutamiento único |         9000 | `/products`, `/auth/*`, `/orders`           |
+
+## Dónde colocar las URLs de los microservicios
+
+### Docker Compose
+
+Las URLs internas están en `docker-compose.yml`, dentro de `servicio-gateway`:
+
+```yaml
+environment:
+  AUTH_SERVICE_URL: "http://servicio-usuarios:8080"
+  PRODUCTOS_SERVICE_URL: "http://servicio-productos:8080"
+  PEDIDOS_SERVICE_URL: "http://servicio-pedidos:8080"
+```
+
+Estos nombres funcionan porque Compose crea una red interna. No los cambies por `localhost` dentro de los contenedores: `localhost` apuntaría al propio gateway.
+
+### Ejecución directa con JARs
+
+Los valores por defecto están en `servicio-gateway/src/main/resources/application.properties`:
+
+```properties
+app.servicios.auth-url=${AUTH_SERVICE_URL:http://localhost:8083}
+app.servicios.productos-url=${PRODUCTOS_SERVICE_URL:http://localhost:8081}
+app.servicios.pedidos-url=${PEDIDOS_SERVICE_URL:http://localhost:8082}
+```
+
+También pueden sobrescribirse al iniciar el gateway:
+
+```powershell
+$env:AUTH_SERVICE_URL="http://127.0.0.1:8083"
+$env:PRODUCTOS_SERVICE_URL="http://127.0.0.1:8081"
+$env:PEDIDOS_SERVICE_URL="http://127.0.0.1:8082"
+java -jar servicio-gateway/target/servicio-gateway-0.0.1-SNAPSHOT.jar
+```
+
+### EC2 con Docker Compose
+
+Si los cuatro contenedores corren en la misma EC2, conserva las URLs internas de Compose. Solo publica el gateway:
+
+```yaml
+ports:
+  - "9000:8080"
+```
+
+Los puertos `8081`, `8082` y `8083` pueden quitarse de `ports` para que no sean accesibles desde Internet. El frontend usará únicamente `http://DNS-PUBLICO-EC2:9000`.
+
+En una arquitectura distribuida, sustituye las variables del gateway por DNS privados, IPs privadas, Cloud Map o load balancers internos. No uses una IP pública para comunicación entre microservicios si están en la misma VPC.
+
+## Autenticación y propósito del token
+
+### Flujo local actual
+
+`servicio-usuarios` recibe registro/login y emite un JWT HS256. El frontend lo envía en cada llamada protegida:
+
+```http
+Authorization: Bearer eyJ...
+```
+
+`servicio-pedidos` valida la firma con el mismo secreto compartido. Este modo es útil para desarrollo o una instalación demo.
+
+Variables relacionadas:
+
+```env
+JWT_SECRET=secreto-largo-y-aleatorio
+JWT_EMISOR=pedidos360-usuarios
+JWT_AUDIENCIA=pedidos360-api
+JWT_LOCAL_ENABLED=true
+JWT_LOCAL_SECRET=secreto-largo-y-aleatorio
+JWT_LOCAL_ISSUER=pedidos360-usuarios
+JWT_LOCAL_AUDIENCE=pedidos360-api
+```
+
+El secreto debe ser idéntico en usuarios y pedidos, pero nunca debe quedar publicado en el repositorio.
+
+### Azure Entra ID en producción
+
+Azure Entra ID autentica al usuario y emite un access token firmado con RS256. El token permite que API Gateway y los microservicios comprueben identidad, audiencia y permisos. No es una sesión ni reemplaza la autorización del endpoint: `/orders` debe exigir el scope o rol correspondiente, por ejemplo `orders.write`.
+
+En `servicio-pedidos` se configuran estas variables:
+
+```env
+JWT_ENABLED=true
+JWT_JWKS_URI=https://login.microsoftonline.com/TENANT_ID/discovery/v2.0/keys
+JWT_ISSUER_URI=https://login.microsoftonline.com/TENANT_ID/v2.0
+JWT_AUDIENCES=api://API_CLIENT_ID
+JWT_REQUIRED_SCOPES=orders.write
+JWT_REQUIRED_ROLES=
+JWT_LOCAL_ENABLED=false
+```
+
+Los nombres de las propiedades equivalentes están en `servicio-pedidos/src/main/resources/application.properties`.
+
+En AWS API Gateway se configura un JWT Authorizer con el mismo issuer y audience. El gateway rechaza tokens inválidos antes de enviar la petición al microservicio. La validación en `servicio-pedidos` permanece como defensa en profundidad.
+
+> Importante: el frontend actual usa el login local de `/auth/ingreso`. Para usar Entra ID de extremo a extremo hay que registrar la SPA, configurar MSAL con Authorization Code + PKCE y enviar el access token de Entra ID. No se deben mezclar tokens HS256 locales con tokens RS256 de Entra ID en el mismo modo de validación.
+
+## Levantar localmente
+
+Requisitos: JDK 17 o superior, Docker y Docker Compose.
 
 ```bash
-mvn clean package          # compila y corre los tests de los 4 microservicios
-```
-
-### Opción A — Maven directo
-```bash
-java -jar servicio-productos/target/servicio-productos-0.0.1-SNAPSHOT.jar   # → :8081
-java -jar servicio-pedidos/target/servicio-pedidos-0.0.1-SNAPSHOT.jar       # → :8082
-java -jar servicio-usuarios/target/servicio-usuarios-0.0.1-SNAPSHOT.jar     # → :8083
-java -jar servicio-gateway/target/servicio-gateway-0.0.1-SNAPSHOT.jar       # → :9000
-```
-
-### Opción B — Docker Compose
-```bash
-mvn clean package
+./mvnw clean package
 docker compose up --build
 ```
-- Productos: http://localhost:8081/products
-- Órdenes: http://localhost:8082/orders
-- Usuarios: http://localhost:8083/auth/ingreso
-- **Gateway (entrypoint)**: http://localhost:9000/products
 
-> En los contenedores todos escuchan en `SERVER_PORT=8080` (mapeados a 8081/8082/8083/9000 en el host).
+En Windows:
 
----
-
-## 3. Contrato de API (lo que consume el frontend)
-
-### GET `/products`
-Devuelve un **array de productos** con la misma forma que `mockProducts.js`:
-
-```json
-[
-  {
-    "id": 1,
-    "name": "Alpha SV Jacket",
-    "description": "...",
-    "price": 899,
-    "image": "https://...",
-    "membrane": "Gore-Tex Pro 3L",
-    "tempRating": "-30°C",
-    "waterproof": "28,000 mm",
-    "weight": "430g",
-    "activity": ["alpinismo", "expedicion"],
-    "category": "hardshell",
-    "brand": "Summit Lab",
-    "colors": ["#1a1a2e", "#c0392b", "#2d3436"]
-  }
-]
+```powershell
+.\mvnw.cmd clean package
+docker compose up --build
 ```
 
-### GET `/products/{id}`
-Devuelve un único producto (`200`) o `404` si no existe.
+URLs locales:
 
-### POST `/orders` _(requiere JWT cuando Azure está conectado)_
-Body aceptado (el frontend envía los items del carrito, que incluyen el producto completo):
-
-```json
-{
-  "items": [
-    { "id": 1, "name": "Alpha SV Jacket", "price": 899, "quantity": 2 }
-  ]
-}
+```text
+Gateway:  http://localhost:9000
+Productos: http://localhost:8081
+Pedidos:   http://localhost:8082
+Usuarios:  http://localhost:8083
 ```
-- Acepta `id` o `productId` por item; `price` y `quantity` opcionales (el total se
-  recalcula en el servidor, nunca se confía en el cliente).
-- Respuesta `201`:
 
-```json
-{
-  "id": "PEDIDO-100001",
-  "status": "RECIBIDO",
-  "customerEmail": "usuario@empresa.cl",
-  "customerName": null,
-  "createdAt": "2026-09-05T12:00:00Z",
-  "items": [ { "productId": 1, "name": "Alpha SV Jacket", "price": 899, "quantity": 2 } ],
-  "totals": { "count": 2, "subtotal": 1798 }
-}
+Pruebas rápidas a través del gateway:
+
+```bash
+curl http://localhost:9000/products
+curl -X POST http://localhost:9000/auth/ingreso \
+  -H "Content-Type: application/json" \
+  -d '{"email":"demo@summitlab.cl","password":"demo1234"}'
 ```
-- `400` si `items` viene vacío o sin `id`/`productId`.
 
-### GET `/orders` y GET `/orders/{id}` _(requieren JWT)_
-Listan los pedidos registrados. Por defecto el id se genera en memoria
-(`PEDIDO-XXXXXX`); para producción se puede reemplazar el repositorio por
-DynamoDB/RDS sin tocar el controlador.
+## Despliegue en una EC2
 
-### POST `/auth/registro`
-Registra un usuario nuevo y devuelve un JWT:
+1. Crear una instancia EC2 con Docker instalado y asignar un Security Group.
+2. Permitir SSH solo desde la IP administrativa.
+3. Permitir `80/443` si habrá Nginx o reverse proxy.
+4. Permitir `9000` solo si el frontend accederá directamente al gateway.
+5. No exponer `8081`, `8082` ni `8083` públicamente.
+6. Clonar el repositorio y configurar secretos mediante variables de entorno.
+7. Construir y levantar los servicios:
 
-```json
-{
-  "token": "eyJhbGci...",
-  "tokenType": "Bearer",
-  "expiresIn": 3600,
-  "user": { "id": 1, "name": "Fabián Reyes", "email": "fabian@summitlab.cl", "rol": "CLIENTE" }
-}
+```bash
+./mvnw clean package -DskipTests
+docker compose up -d --build
+docker compose ps
+docker compose logs -f servicio-gateway
 ```
-- `409` si el email ya existe.
 
-### POST `/auth/ingreso`
-Login: misma respuesta que registro. `401` si las credenciales son incorrectas.
+Cambia `CORS_ALLOWED_ORIGINS` por el dominio real del frontend. Si usas Nginx, publica `/api` hacia `http://127.0.0.1:9000` y configura en el frontend:
 
-### GET `/users` y GET `/users/{id}`
-Listan usuarios registrados (solo datos demo).
+```env
+VITE_API_BASE_URL=https://tu-dominio.com/api
+VITE_USE_MOCK=false
+```
 
-### GET `/api/endpoints` _(en cada servicio y consolidado en el gateway)_
-Inventario JSON de las rutas del servicio, útil para monitoreo y debug.
+Sin Nginx, usa directamente `http://DNS-EC2:9000` como valor base.
 
----
+## AWS API Gateway
 
-## 4. Seguridad JWT (local + Azure opcional)
+API Gateway es el endpoint público, control de CORS, throttling y punto donde puede aplicarse el JWT Authorizer de Entra ID. Debe enrutar:
 
-`servicio-pedidos` valida tokens con **doble modo**:
+| Ruta pública                   | Destino              |
+| ------------------------------ | -------------------- |
+| `/products`                    | `servicio-productos` |
+| `/auth/{proxy+}`               | `servicio-usuarios`  |
+| `/orders` y `/orders/{proxy+}` | `servicio-pedidos`   |
 
-**Modo local** (default, para desarrollo):
-| Variable | Default |
-|---|---|
-| `JWT_LOCAL_ENABLED` | `true` |
-| `JWT_LOCAL_SECRET` | `cambiar-en-produccion-secreto-compartido-32bytes` |
-| `JWT_LOCAL_ISSUER` | `servicio-usuarios` |
+Los destinos pueden ser una EC2 mediante HTTP integration, un Application Load Balancer interno o servicios ECS. El frontend solo recibe la URL de API Gateway:
 
-Valida HS256 contra el secreto compartido. `servicio-usuarios` firma con el mismo secreto.
+```env
+VITE_API_BASE_URL=https://API_ID.execute-api.REGION.amazonaws.com/prod
+```
 
-**Modo Azure** (producción):
-| Variable | Ejemplo |
-|---|---|
-| `JWT_LOCAL_ENABLED` | `false` |
-| `JWT_ENABLED` | `true` |
-| `JWT_JWKS_URI` | `https://login.microsoftonline.com/{TENANT}/discovery/v2.0/keys` |
-| `JWT_ISSUER_URI` | `https://login.microsoftonline.com/{TENANT}/v2.0` |
-| `JWT_AUDIENCES` | `api://{CLIENT-ID}` |
-| `JWT_REQUIRED_SCOPES` | `orders.write` |
+No coloques las URLs privadas de los microservicios en el `.env` del frontend.
 
-Con ambos desactivados el servicio corre en **modo demo** sin token.
+## Salud y observabilidad
 
----
+Cada servicio expone `GET /actuator/health` y `GET /api/endpoints`. El gateway consolida el inventario en `GET /api/endpoints`.
 
-## 5. Conectar AWS (producción)
+## Notas de producción
 
-En producción el `servicio-gateway` local se reemplaza por **AWS API Gateway** (o se usa el
-gateway como sidecar/ALB). Imágenes y contenedores:
-
-1. Build de imágenes:
-   ```bash
-   docker build -t pedidos360/servicio-productos:latest servicio-productos/
-   docker build -t pedidos360/servicio-pedidos:latest servicio-pedidos/
-   docker build -t pedidos360/servicio-usuarios:latest servicio-usuarios/
-   docker build -t pedidos360/servicio-gateway:latest servicio-gateway/
-   ```
-2. Desplegar en **ECS** (task defs con `SERVER_PORT=8080` y health check `/actuator/health`).
-3. **API Gateway** en AWS enruta: `/products` → productos, `/auth/*` → usuarios,
-   `/orders` → pedidos (con JWT Authorizer si se usa Azure).
-4. En el frontend `.env`:
-   ```
-   VITE_API_BASE_URL=https://TU-APIGATEWAY.execute-api.REGION.amazonaws.com/prod
-   VITE_USE_MOCK=false
-   ```
-
----
-
-## 7. Estado del proyecto
-
-**Hecho**
-- Backend de 4 microservicios listo: productos, pedidos, usuarios, gateway
-  (`mvn clean package` → BUILD SUCCESS, 17 tests).
-- Gateway como entrypoint único: enruta `/auth/*` → usuarios, `/products` → productos,
-  `/orders` → pedidos, `/api/endpoints` → consolidado.
-- JWT local HS256: `servicio-usuarios` firma, `servicio-pedidos` valida.
-- Registro de endpoints: `GET /api/endpoints` en cada servicio y consolidado en el gateway.
-- Frontend conectado: `authService.register/login/logout` + Bearer token automático.
-- Botones "Ingresar" y "Crear cuenta" abren `AuthModal` (login/registro).
-- Checkout sin token muestra toast + abre modal de login.
-
-**Pendiente (infraestructura, no código)**
-1. Azure: App Registration + variables JWT si se quiere validación RS256 en producción.
-2. AWS: ECR + ECS + API Gateway (reemplaza `servicio-gateway` en el deploy).
-3. Frontend: `.env` apuntando al API Gateway de AWS.
-
-Pasos detallados en `NOTAS.md`.
-
----
-
-## 8. Notas
-
-- Los datos viven en **memoria** (mapas concurrentes). Persistir con DynamoDB/RDS sin cambiar controladores.
-- `servicio-usuarios` emite JWT HS256 con claim `email`; `servicio-pedidos` lo lee para `customerEmail`.
-- CORS configurable por servicio vía `CORS_ALLOWED_ORIGINS` (default `http://localhost:5173`).
-- El secreto JWT compartido (`JWT_LOCAL_SECRET` / `app.auth.secreto`) debe ser el mismo en usuarios y pedidos.
-- Seed de usuario demo: `demo@summitlab.cl` / `demo1234`.
+- Los repositorios actuales viven en memoria; para persistencia usar DynamoDB, RDS u otra base de datos administrada.
+- Cambiar todos los secretos de ejemplo antes de exponer la EC2.
+- Configurar HTTPS, preferentemente mediante Application Load Balancer, Nginx o API Gateway.
+- Mantener el gateway como único acceso del frontend a los microservicios.
