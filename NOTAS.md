@@ -135,15 +135,14 @@ Lo que sigue es infraestructura (Azure + AWS), no código:
 
 ## 8. Estado del Backend (completado y verificado)
 
-Backend reestructurado a **Maven multi-módulo** con los dos microservicios listos
-para conectarse con Azure y AWS. El código (paquetes, clases, variables) está en
-**español**; los **campos JSON se mantienen en inglés** porque son el contrato que
-consume `src/services/api.js` y `mockProducts.js`.
+Backend **Maven multi-módulo** con 4 microservicios. Código en **español**, JSON en inglés.
 
-| Microservicio | Rutas | Puerto local | Seguridad |
+| Microservicio | Rutas | Puerto | Seguridad |
 |---|---|---|---|
-| `servicio-productos` | `GET /products`, `GET /products/{id}` | 8081 | Pública (catálogo) |
-| `servicio-pedidos` | `POST /orders`, `GET /orders`, `GET /orders/{id}` | 8082 | JWT Azure + scope `orders.write` |
+| `servicio-productos` | `GET /products`, `GET /products/{id}` | 8081 | Pública |
+| `servicio-pedidos` | `POST /orders`, `GET /orders`, `GET /orders/{id}` | 8082 | JWT local HS256 + Azure JWKS |
+| `servicio-usuarios` | `POST /auth/registro`, `POST /auth/ingreso`, `GET /users` | 8083 | Pública (emite JWT) |
+| `servicio-gateway` | **Entry point único** — enruta todo a los MS internos | 9000 | Propaga Authorization |
 
 Estructura:
 
@@ -151,8 +150,8 @@ Estructura:
 servicio-productos/
   └── com.mountainbackend.productos
       ├── ServicioProductosApplication
-      ├── modelo/Producto          (record igual que mockProducts.js)
-      ├── repositorio/RepositorioProductos  (8 productos semilla, en memoria)
+      ├── modelo/Producto
+      ├── repositorio/RepositorioProductos  (8 productos semilla)
       ├── controlador/ControladorProductos
       └── configuracion/FiltroCors
 servicio-pedidos/
@@ -160,24 +159,41 @@ servicio-pedidos/
       ├── ServicioPedidosApplication
       ├── modelo/Pedido, LineaPedido, TotalesPedido
       ├── dto/SolicitudPedido
-      ├── servicio/ServicioPedidos (totales recalculados en servidor)
+      ├── servicio/ServicioPedidos
       ├── controlador/ControladorPedidos
-      ├── seguridad/FiltroValidacionJwt  (JWKS Azure: firma, exp/nbf, iss, aud, scopes/roles)
+      ├── seguridad/FiltroValidacionJwt  (local HS256 + Azure JWKS)
       └── configuracion/FiltroCors, PropiedadesSeguridad
+servicio-usuarios/
+  └── com.mountainbackend.usuarios
+      ├── ServicioUsuariosApplication
+      ├── modelo/Usuario
+      ├── dto/SolicitudRegistro, SolicitudIngreso, RespuestaToken
+      ├── repositorio/RepositorioUsuarios
+      ├── servicio/ServicioUsuarios  (PBKDF2, seed demo@summitlab.cl)
+      ├── controlador/ControladorAutenticacion, ControladorUsuarios, ControladorRegistroApi
+      ├── seguridad/EmisorJwt, PropiedadesAutenticacion, RegistroEndpoints
+      └── configuracion/FiltroCors
+servicio-gateway/
+  └── com.mountainbackend.gateway
+      ├── ServicioGatewayApplication
+      ├── proxy/FiltroProxyApi  (RestClient: /auth → usuarios, /products → productos, /orders → pedidos)
+      ├── controlador/ControladorRegistroApi  (consolida /api/endpoints de todos los MS)
+      └── configuracion/FiltroCors, PropiedadesGateway
 ```
 
-- **CORS** por origen configurable: `app.cors.origenes-permitidos` / env `CORS_ALLOWED_ORIGINS`
-  (default `http://localhost:5173`), con `Allow-Credentials` (el front usa `credentials:'include'`).
-- **Health checks**: `/actuator/health` en ambos (para el load balancer / ECS).
-- **JWT desactivable**: `JWT_ENABLED=false` → modo demo sin token (para probar contra el front
-  con `VITE_USE_MOCK=false`); `true` → exige token válido + scope `orders.write` (o rol).
+- **JWT local**: `servicio-usuarios` firma HS256 con `app.auth.secreto`; `servicio-pedidos` valida con `app.seguridad.local-secreto`.
+- **JWT Azure** (opcional): con `JWT_LOCAL_ENABLED=false` + `JWT_ENABLED=true`, valida JWKS RS256.
+- **Registro de endpoints**: `GET /api/endpoints` en cada servicio; el gateway consolida todos.
+- **Health checks**: `/actuator/health` en todos los servicios.
 
-Verificación ya realizada:
-- `mvn clean package` → **BUILD SUCCESS**, 8/8 tests.
-- `GET /products` → 200 con 8 productos (mismo shape de `mockProducts.js`).
-- `POST /orders` → 201 con `{ "id": "PEDIDO-100000", "totals": { count, subtotal } }`.
-- CORS: responde solo a `http://localhost:5173`; orígenes ajenos sin header.
-- JWT activo: sin token / token basura / token falso → **401**; ruta protegida sin token → 401.
+Verificación realizada:
+- `mvn clean package` → **BUILD SUCCESS**, 17 tests (productos 4, pedidos 4, usuarios 6, gateway 3).
+- `GET /products` → 200 con 8 productos.
+- `POST /auth/registro` → 201 con JWT + datos usuario.
+- `POST /auth/ingreso` → 201 con JWT.
+- `POST /orders` con Bearer token → 201 con pedido + email del JWT.
+- `POST /orders` sin token → **401**.
+- `GET /api/endpoints` (gateway) → JSON con inventario consolidado de los 3 MS.
 
 ## 9. Cómo correr el backend
 
@@ -190,63 +206,73 @@ mvn clean package
 Luego, opción A (directo) o B (Docker Compose):
 
 ```bash
-# A) dos procesos
+# A) 4 procesos (el gateway es el entrypoint del frontend)
 java -jar servicio-productos/target/servicio-productos-0.0.1-SNAPSHOT.jar   # :8081
 java -jar servicio-pedidos/target/servicio-pedidos-0.0.1-SNAPSHOT.jar       # :8082
+java -jar servicio-usuarios/target/servicio-usuarios-0.0.1-SNAPSHOT.jar     # :8083
+java -jar servicio-gateway/target/servicio-gateway-0.0.1-SNAPSHOT.jar       # :9000
 
 # B) Docker Compose (requiere haber empaquetado antes)
 docker compose up --build
 ```
 
-Prueba rápida en modo demo:
+Prueba rápida (todo vía el gateway en :9000):
 
 ```bash
-curl http://localhost:8081/products
-curl -X POST http://localhost:8082/orders \
+# Catálogo
+curl http://localhost:9000/products
+
+# Login con usuario demo
+curl -X POST http://localhost:9000/auth/ingreso \
   -H "Content-Type: application/json" \
-  -d '{"items":[{"id":1,"name":"Alpha SV Jacket","price":899,"quantity":2}]}'
+  -d '{"email":"demo@summitlab.cl","password":"demo1234"}'
+
+# Pedido con token (reemplaza TOKEN con el del login)
+curl -X POST http://localhost:9000/orders \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer TOKEN" \
+  -d '{"items":[{"productId":1,"name":"Alpha SV Jacket","price":899,"quantity":2}]}'
+
+# Registro de endpoints
+curl http://localhost:9000/api/endpoints
 ```
 
 > OJO con Windows PowerShell: escapar el JSON (o usar un archivo con `--data-binary @archivo.json`).
 
-## 10. Conexión con Azure (pasos para el compañero)
+## 10. Conexión con Azure (opcional, producción)
+
+El `servicio-pedidos` soporta validación JWKS de Azure como **doble capa** (además del JWT local).
 
 1. Crear **App Registration** en Azure AD / Entra ID:
-   - Redirect URI (SPA) = la del frontend (p.ej. `http://localhost:5173`).
-   - Exponer una API con scope (p.ej. `orders.write`) y opcionalmente App Roles
-     (p.ej. `Orders.Write`) para "validación estricta de roles y scopes".
-2. Anotar: **Tenant ID**, **Client ID**, **Scopes/Roles** creados.
-3. En el deploy de `servicio-pedidos` setear (env vars o en `docker-compose.yml`):
+   - Redirect URI = la del frontend (`http://localhost:5173`).
+   - Scope `orders.write`, App Roles opcionales.
+2. En `servicio-pedidos` setear:
    ```
+   JWT_LOCAL_ENABLED=false
    JWT_ENABLED=true
-   JWT_JWKS_URI=https://login.microsoftonline.com/{TU-TENANT-ID}/discovery/v2.0/keys
-   JWT_ISSUER_URI=https://login.microsoftonline.com/{TU-TENANT-ID}/v2.0
-   JWT_AUDIENCES=api://{TU-CLIENT-ID}
+   JWT_JWKS_URI=https://login.microsoftonline.com/{TENANT}/discovery/v2.0/keys
+   JWT_ISSUER_URI=https://login.microsoftonline.com/{TENANT}/v2.0
+   JWT_AUDIENCES=api://{CLIENT-ID}
    JWT_REQUIRED_SCOPES=orders.write
-   JWT_REQUIRED_ROLES=Orders.Write            # opcional
    ```
-   (Mapeo interno en `application.properties`: `app.seguridad.*`.)
-4. Probar con un token real del login del frontend:
-   - Sin header `Authorization` → **401**.
-   - Con token que NO trae `orders.write` → **403**.
-   - Con token válido → **201**.
+3. Validaciones: firma RS256 contra JWKS, iss, aud, scopes/roles → 401/403.
 
-## 11. Conexión con AWS (pasos para el compañero)
+## 11. Conexión con AWS (producción)
+
+En producción el `servicio-gateway` se reemplaza por **AWS API Gateway** (o se despliega como sidecar).
 
 1. Build de imágenes:
    ```bash
    docker build -t pedidos360/servicio-productos:latest servicio-productos/
    docker build -t pedidos360/servicio-pedidos:latest servicio-pedidos/
+   docker build -t pedidos360/servicio-usuarios:latest servicio-usuarios/
+   docker build -t pedidos360/servicio-gateway:latest servicio-gateway/
    ```
-2. Subirlas a **ECR** y crear **Task Definitions** en **ECS** (Fargate):
-   - `SERVER_PORT=8080`, health check `GET /actuator/health`, y las variables de la §10
-     para `servicio-pedidos`.
-3. **API Gateway** como único entrypoint:
-   - `GET /products` (y `/{id}`) → `servicio-productos` (público).
-   - `POST /orders`, `GET /orders` → `servicio-pedidos` con **JWT Authorizer**
-     (JWKS de Azure): valida firma/vigencia/issuer/audience → 401/403.
-   - Configurar **CORS** restringido al dominio real del frontend.
-4. En el frontend, `.env`:
+2. Subir a **ECR**, crear **Task Definitions** en **ECS** (Fargate):
+   - `SERVER_PORT=8080`, health check `GET /actuator/health`.
+3. **API Gateway** en AWS enruta: `/products` → productos, `/auth/*` → usuarios,
+   `/orders` → pedidos (con JWT Authorizer si se usa Azure).
+4. Frontend `.env`:
    ```
    VITE_API_BASE_URL=https://TU-APIGATEWAY.execute-api.REGION.amazonaws.com/prod
    VITE_USE_MOCK=false
@@ -254,11 +280,12 @@ curl -X POST http://localhost:8082/orders \
 
 ## 12. Checklist de entregables
 
-- [ ] Frontend: login/logout con MSAL (ya tiene placeholders en Navbar/Banner).
-- [ ] MSAL configurado con los datos de Azure (Client ID, Tenant, redirect, scopes).
-- [ ] `src/services/api.js` adjuntando el token JWT en `Authorization: Bearer …`.
-- [ ] Microservicios desplegados en AWS (ECR + ECS) ✔ listos para subir.
-- [ ] API Gateway con JWT Authorizer (Azure JWKS) + CORS al dominio del front.
-- [ ] Evidencias: login con JWT obtenido de Azure; en el Gateway 401/403 sin token
-      y 200 con token autorizado; `GET /products` y `POST /orders` funcionando.
-- [ ] Repos de GitHub separados por componente, con `.gitignore` (el backend ya tiene).
+- [x] Backend 4 microservicios: productos, pedidos, usuarios, gateway — BUILD SUCCESS, 17 tests.
+- [x] Gateway como entrypoint único: enruta `/auth/*`, `/products`, `/orders`, `/api/endpoints`.
+- [x] JWT local HS256: usuarios firma, pedidos valida.
+- [x] Registro de endpoints: `GET /api/endpoints` consolidado en gateway.
+- [x] Frontend: `authService.register/login/logout` + Bearer token automático.
+- [x] Botones "Ingresar" y "Crear cuenta" abren AuthModal (login/registro).
+- [x] Checkout sin token muestra toast + abre modal de login.
+- [ ] Azure: App Registration + JWT JWKS (solo si se quiere producción con Azure AD).
+- [ ] AWS: ECR + ECS + API Gateway (reemplaza `servicio-gateway` en deploy).

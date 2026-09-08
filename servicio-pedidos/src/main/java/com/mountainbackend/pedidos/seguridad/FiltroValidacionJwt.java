@@ -19,6 +19,7 @@ import com.nimbusds.jose.JWSAlgorithm;
 import com.nimbusds.jose.JWSHeader;
 import com.nimbusds.jose.JWSVerifier;
 import com.nimbusds.jose.crypto.ECDSAVerifier;
+import com.nimbusds.jose.crypto.MACVerifier;
 import com.nimbusds.jose.crypto.RSASSAVerifier;
 import com.nimbusds.jose.jwk.ECKey;
 import com.nimbusds.jose.jwk.JWK;
@@ -38,15 +39,14 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 
 /**
- * Valida en el microservicio los tokens JWT firmados por Azure AD / Entra ID:
- *  - Firma y vigencia contra el JWKS remoto (RS256/RS384/RS512).
- *  - Issuer y audience esperados.
- *  - Scopes (claim scp/scope/scopes) y roles de aplicación (claim roles).
+ * Valida los JWT que protegen /orders. Soporta dos emisores:
+ *  - JWT local de la tienda (servicio-usuarios, HS256): se activa con
+ *    app.seguridad.local-habilitado=true. Valida firma con el secreto compartido,
+ *    vigencia, emisor y audiencia del token.
+ *  - JWT de Azure AD / Entra ID (RS256/ES256): se activa con app.seguridad.habilitado=true
+ *    y valida contra el JWKS remoto (firma, vigencia, issuer y audience).
  *  - 401 sin token o token inválido/expirado; 403 sin scope/rol requerido.
- *
- * Se desactiva con app.seguridad.habilitado=false (modo demo local). Cuando se
- * conecte Azure basta con activarlo y setear jwks-uri, emisor, audiencias,
- * scopes/roles requeridos.
+ * Con ambos validador desactivados el filtro no corre (modo demo sin token).
  */
 @Component
 @Order(1)
@@ -69,29 +69,31 @@ public class FiltroValidacionJwt extends OncePerRequestFilter {
 			String jwksUri = recortarONulo(propiedades.getJwksUri());
 			if (propiedades.isHabilitado() && jwksUri != null) {
 				JWKSource<SecurityContext> fuente = new RemoteJWKSet<>(URI.create(jwksUri).toURL());
-				log.info("Validación JWT activa contra jwks-uri={}", jwksUri);
+				log.info("Validación JWT de Azure activa contra jwks-uri={}", jwksUri);
 				return fuente;
 			}
 		} catch (Exception ex) {
 			log.error("No se pudo inicializar el JWKS ({})", ex.getMessage());
 		}
-		log.warn("Validación JWT DESACTIVADA: setea app.seguridad.habilitado=true y app.seguridad.jwks-uri.");
+		if (propiedades.isHabilitado()) {
+			log.warn("JWKS no configurado: setea app.seguridad.jwks-uri para validar tokens de Azure.");
+		} else if (propiedades.isLocalHabilitado()) {
+			log.info("Validación JWT local activa (tokens HS256 de servicio-usuarios).");
+		} else {
+			log.warn("Validación JWT DESACTIVADA: el microservicio acepta peticiones sin token.");
+		}
 		return null;
 	}
 
 	@Override
 	protected boolean shouldNotFilter(HttpServletRequest request) {
-		return !propiedades.isHabilitado() || "OPTIONS".equalsIgnoreCase(request.getMethod());
+		boolean algunValidadorActivo = propiedades.isHabilitado() || propiedades.isLocalHabilitado();
+		return !algunValidadorActivo || "OPTIONS".equalsIgnoreCase(request.getMethod());
 	}
 
 	@Override
 	protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
 			throws ServletException, IOException {
-		if (fuenteClaves == null) {
-			escribirError(response, 500, "La validación JWT no está inicializada: revise app.seguridad.jwks-uri.");
-			return;
-		}
-
 		String header = request.getHeader("Authorization");
 		if (header == null || !header.startsWith("Bearer ")) {
 			escribirError(response, 401, "Falta el token JWT en el header Authorization.");
@@ -108,19 +110,24 @@ public class FiltroValidacionJwt extends OncePerRequestFilter {
 			return;
 		}
 
-		if (!emisorValido(claims)) {
-			escribirError(response, 401, "El issuer del token no es el esperado.");
-			return;
-		}
-
-		if (!audienciaValida(claims)) {
-			escribirError(response, 401, "La audience del token no es la esperada.");
-			return;
-		}
-
-		if (!tieneAutoridadRequerida(claims)) {
-			escribirError(response, 403, "No tienes los scopes/roles requeridos para esta operación.");
-			return;
+		if (esTokenLocal(claims)) {
+			if (!tieneScopeLocal(claims)) {
+				escribirError(response, 403, "No tienes los scopes requeridos para esta operación.");
+				return;
+			}
+		} else {
+			if (!emisorValido(claims)) {
+				escribirError(response, 401, "El issuer del token no es el esperado.");
+				return;
+			}
+			if (!audienciaValida(claims)) {
+				escribirError(response, 401, "La audience del token no es la esperada.");
+				return;
+			}
+			if (!tieneAutoridadRequerida(claims)) {
+				escribirError(response, 403, "No tienes los scopes/roles requeridos para esta operación.");
+				return;
+			}
 		}
 
 		request.setAttribute(ATRIBUTO_CLAIMS_JWT, claims);
@@ -128,10 +135,35 @@ public class FiltroValidacionJwt extends OncePerRequestFilter {
 	}
 
 	/**
-	 * Verifica firma contra el JWKS remoto y valida vigencia (exp/nbf).
+	 * Verifica firma y vigencia del token. Si el emisor es el de la tienda
+	 * (servicio-usuarios) valida el HS256 con el secreto compartido; en caso
+	 * contrario valida contra el JWKS remoto de Azure (RS256/RS384/RS512/ES256...).
 	 */
 	private JWTClaimsSet verificarYParsear(String token) throws Exception {
 		SignedJWT firmado = SignedJWT.parse(token);
+
+		if (esFirmaLocal(firmado)) {
+			if (!propiedades.isLocalHabilitado()) {
+				throw new IllegalStateException("JWT local no habilitado en este servicio");
+			}
+			String secreto = recortarONulo(propiedades.getLocalSecreto());
+			if (secreto == null) {
+				throw new IllegalStateException("Falta el secreto local (JWT_LOCAL_SECRET)");
+			}
+			if (!firmado.verify(new MACVerifier(secreto.getBytes(java.nio.charset.StandardCharsets.UTF_8)))) {
+				throw new IllegalStateException("Firma local JWT no válida");
+			}
+			JWTClaimsSet claims = firmado.getJWTClaimsSet();
+			validarVigencia(claims);
+			if (!audienciaLocalValida(claims)) {
+				throw new IllegalStateException("Audiencia del token local no esperada");
+			}
+			return claims;
+		}
+
+		if (fuenteClaves == null) {
+			throw new IllegalStateException("JWKS no configurado para validar tokens de Azure");
+		}
 
 		JWSHeader cabeceraJws = firmado.getHeader();
 		JWSAlgorithm algoritmo = cabeceraJws.getAlgorithm();
@@ -168,7 +200,10 @@ public class FiltroValidacionJwt extends OncePerRequestFilter {
 			throw new IllegalStateException("Firma JWT no válida");
 		}
 
-		JWTClaimsSet claims = firmado.getJWTClaimsSet();
+		return validarVigencia(firmado.getJWTClaimsSet());
+	}
+
+	private JWTClaimsSet validarVigencia(JWTClaimsSet claims) throws Exception {
 		Date ahora = new Date();
 		Date expiracion = claims.getExpirationTime();
 		if (expiracion == null || expiracion.before(ahora)) {
@@ -179,6 +214,56 @@ public class FiltroValidacionJwt extends OncePerRequestFilter {
 			throw new IllegalStateException("Token aún no es válido (nbf)");
 		}
 		return claims;
+	}
+
+	/**
+	 * true si el token fue emitido por servicio-usuarios (emisor local), para enrutar
+	 * la validación sin tener que consultar el JWKS de Azure.
+	 */
+	private boolean esFirmaLocal(SignedJWT firmado) {
+		try {
+			String emisor = firmado.getJWTClaimsSet() != null ? firmado.getJWTClaimsSet().getIssuer() : null;
+			String esperado = recortarONulo(propiedades.getLocalEmisor());
+			return emisor != null && esperado != null && emisor.equals(esperado);
+		} catch (Exception ex) {
+			return false;
+		}
+	}
+
+	private boolean esTokenLocal(JWTClaimsSet claims) {
+		if (!propiedades.isLocalHabilitado()) {
+			return false;
+		}
+		String emisor = recortarONulo(propiedades.getLocalEmisor());
+		return emisor != null && emisor.equals(claims.getIssuer());
+	}
+
+	private boolean audienciaLocalValida(JWTClaimsSet claims) {
+		String esperada = recortarONulo(propiedades.getLocalAudiencia());
+		if (esperada == null) {
+			return true;
+		}
+		List<String> audienciasToken = claims.getAudience();
+		return audienciasToken != null && audienciasToken.contains(esperada);
+	}
+
+	private boolean tieneScopeLocal(JWTClaimsSet claims) {
+		String scopeEsperado = recortarONulo(propiedades.getLocalScopeRequerido());
+		if (scopeEsperado == null || scopeEsperado.isEmpty()) {
+			return true;
+		}
+		Set<String> scopes = new HashSet<>();
+		for (String nombreClaim : List.of("scp", "scope", "scopes")) {
+			Object valor = claims.getClaim(nombreClaim);
+			if (valor instanceof List<?> lista) {
+				for (Object item : lista) {
+					scopes.add(String.valueOf(item));
+				}
+			} else if (valor != null) {
+				scopes.add(String.valueOf(valor));
+			}
+		}
+		return scopes.contains(scopeEsperado);
 	}
 
 	private boolean emisorValido(JWTClaimsSet claims) {

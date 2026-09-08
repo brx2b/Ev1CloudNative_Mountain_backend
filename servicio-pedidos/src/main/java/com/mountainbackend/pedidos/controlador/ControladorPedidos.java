@@ -75,7 +75,10 @@ public class ControladorPedidos {
 		if (claims == null) {
 			return null;
 		}
-		Object principal = claims.getClaim("preferred_username");
+		Object principal = claims.getClaim("email");
+		if (principal == null) {
+			principal = claims.getClaim("preferred_username");
+		}
 		if (principal == null) {
 			principal = claims.getClaim("upn");
 		}
