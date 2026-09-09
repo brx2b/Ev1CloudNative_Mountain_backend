@@ -30,6 +30,7 @@ import com.nimbusds.jose.jwk.RSAKey;
 import com.nimbusds.jose.jwk.source.JWKSource;
 import com.nimbusds.jose.jwk.source.RemoteJWKSet;
 import com.nimbusds.jose.proc.SecurityContext;
+import com.nimbusds.jose.util.DefaultResourceRetriever;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
 
@@ -68,7 +69,8 @@ public class FiltroValidacionJwt extends OncePerRequestFilter {
 		try {
 			String jwksUri = recortarONulo(propiedades.getJwksUri());
 			if (propiedades.isHabilitado() && jwksUri != null) {
-				JWKSource<SecurityContext> fuente = new RemoteJWKSet<>(URI.create(jwksUri).toURL());
+				DefaultResourceRetriever recuperador = new DefaultResourceRetriever(5000, 5000);
+				JWKSource<SecurityContext> fuente = new RemoteJWKSet<>(URI.create(jwksUri).toURL(), recuperador);
 				log.info("Validación JWT de Azure activa contra jwks-uri={}", jwksUri);
 				return fuente;
 			}
@@ -265,7 +267,7 @@ public class FiltroValidacionJwt extends OncePerRequestFilter {
 				scopes.add(String.valueOf(valor));
 			}
 		}
-		return scopes.contains(scopeEsperado);
+		return scopes.stream().anyMatch(scope -> esPermiso(scope, scopeEsperado));
 	}
 
 	private boolean emisorValido(JWTClaimsSet claims) {
@@ -320,12 +322,33 @@ public class FiltroValidacionJwt extends OncePerRequestFilter {
 		}
 
 		for (String requerido : scopesRequeridos) {
-			if (scopesToken.contains(requerido)) {
+			if (scopesToken.stream().anyMatch(scope -> esPermiso(scope, requerido))) {
 				return true;
 			}
 		}
 		for (String requerido : rolesRequeridos) {
 			if (rolesToken.contains(requerido)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Comprueba si un scope del token cubre el requerido. Azure entrega el claim scp
+	 * a veces como lista separada por espacios y otras con el prefijo completo del
+	 * recurso (p.ej. "api://app-id/orders.write"): se acepta coincidencia exacta o
+	 * por sufijo ("/orders.write").
+	 */
+	private boolean esPermiso(String permisoToken, String requerido) {
+		if (permisoToken == null || requerido == null) {
+			return false;
+		}
+		for (String parte : permisoToken.trim().split("\\s+")) {
+			if (parte.isEmpty()) {
+				continue;
+			}
+			if (parte.equals(requerido) || parte.endsWith("/" + requerido)) {
 				return true;
 			}
 		}

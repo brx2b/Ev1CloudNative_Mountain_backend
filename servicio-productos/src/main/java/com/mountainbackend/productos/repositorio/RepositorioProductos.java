@@ -7,6 +7,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 import org.springframework.stereotype.Repository;
 
+import com.mountainbackend.productos.dto.SolicitudProducto;
 import com.mountainbackend.productos.modelo.Producto;
 
 /**
@@ -32,6 +33,36 @@ public class RepositorioProductos {
 
 	public Optional<Producto> buscarPorId(long id) {
 		return Optional.ofNullable(productos.get(id));
+	}
+
+	public Producto guardar(SolicitudProducto solicitud) {
+		long id = generarSiguienteId();
+		Producto producto = new Producto(id,
+			solicitud.name(),
+			obligatorioONulo(solicitud.description()),
+			solicitud.price() != null ? solicitud.price() : 0,
+			obligatorioONulo(solicitud.image()),
+			obligatorioONulo(solicitud.membrane()),
+			obligatorioONulo(solicitud.tempRating()),
+			obligatorioONulo(solicitud.waterproof()),
+			obligatorioONulo(solicitud.weight()),
+			solicitud.activity() != null ? solicitud.activity() : List.of(),
+			obligatorioONulo(solicitud.category()),
+			obligatorioONulo(solicitud.brand()),
+			solicitud.colors() != null ? solicitud.colors() : List.of());
+		productos.put(id, producto);
+		return producto;
+	}
+
+	private long generarSiguienteId() {
+		return productos.keySet().stream()
+			.mapToLong(Long::longValue)
+			.max()
+			.orElse(0L) + 1L;
+	}
+
+	private String obligatorioONulo(String valor) {
+		return valor != null ? valor : "";
 	}
 
 	private void sembrarCatalogo() {

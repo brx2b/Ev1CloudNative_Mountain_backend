@@ -36,6 +36,7 @@ public class ControladorRegistroApi {
 					"prefijo", "/",
 					"endpoints", List.of(
 						Map.of("method", "GET", "path", "/products", "descripcion", "Catálogo de productos", "secured", false),
+						Map.of("method", "POST", "path", "/products", "descripcion", "Crea un producto en el catálogo", "secured", false),
 						Map.of("method", "GET", "path", "/products/{id}", "descripcion", "Detalle de un producto", "secured", false))),
 				Map.of(
 					"servicio", "servicio-pedidos",
