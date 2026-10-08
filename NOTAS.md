@@ -180,8 +180,8 @@ servicio-usuarios/
 
 - **JWT local**: `servicio-usuarios` firma HS256 con `app.auth.secreto`; `servicio-pedidos` valida con `app.seguridad.local-secreto`.
 - **JWT Azure** (opcional): con `JWT_LOCAL_ENABLED=false` + `JWT_ENABLED=true`, valida JWKS RS256.
-- **Registro de endpoints**: `GET /api/endpoints` en cada servicio (útil para
-  verificar cada integración del API Gateway).
+- **Registro de endpoints**: `GET /api/endpoints` en `servicio-usuarios`
+  (accesible por el nginx como `/api/usuarios/endpoints`).
 - **Health checks**: `/actuator/health` en todos los servicios.
 - **Memoria**: cada contenedor limita su JVM con `JAVA_OPTS` (default
   `-Xms128m -Xmx384m` en `docker-compose.yml`). Los 3 MS caben en una sola

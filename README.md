@@ -185,8 +185,9 @@ No coloques las URLs privadas de los microservicios en el `.env` del frontend.
 
 ## Salud y observabilidad
 
-Cada servicio expone `GET /actuator/health` y `GET /api/endpoints` (inventario
-de sus propias rutas, útil para verificar cada integración del API Gateway).
+Cada servicio expone `GET /actuator/health`; `servicio-usuarios` además expone
+`GET /api/endpoints` (inventario de sus rutas, accesible por el nginx como
+`/api/usuarios/endpoints`).
 
 ## Notas de producción
 
