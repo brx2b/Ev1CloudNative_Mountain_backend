@@ -19,7 +19,6 @@
 		<module>servicio-productos</module>
 		<module>servicio-pedidos</module>
 		<module>servicio-usuarios</module>
-		<module>servicio-gateway</module>
 	</modules>
 
 	<properties>

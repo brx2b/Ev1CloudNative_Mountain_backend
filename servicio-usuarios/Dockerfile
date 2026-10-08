@@ -8,5 +8,6 @@ LABEL org.opencontainers.image.description="Pedidos360 - Microservicio de Identi
 ARG JAR_FILE=target/*.jar
 COPY ${JAR_FILE} app.jar
 ENV SERVER_PORT=8080
+ENV JAVA_OPTS=""
 EXPOSE 8080
-ENTRYPOINT ["java", "-jar", "/app/app.jar"]
+ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar /app/app.jar"]

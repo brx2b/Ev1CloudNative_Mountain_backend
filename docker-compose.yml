@@ -1,38 +1,20 @@
 version: "3.9"
 
-# Levanta los microservicios del backend localmente (modo demo, sin Azure/AWS).
+# Microservicios del backend (sin gateway Spring: el entrypoint único es
+# AWS API Gateway, que enruta /products, /auth/* y /orders a cada servicio).
 # Requiere haber empaquetado antes:
 #   mvn clean package
 #   docker compose up --build
 #
-# Puertos:
-#   9000 -> servicio-gateway     (entrypoint único que usa el frontend)
+# Puertos (cada MS escucha en 8080 dentro de su contenedor):
 #   8081 -> servicio-productos
 #   8082 -> servicio-pedidos
 #   8083 -> servicio-usuarios
+#
+# Memoria: cada JVM se limita con JAVA_OPTS (default -Xms128m -Xmx384m).
+# Con 3 servicios el consumo ronda 1.2-1.5 GB: cabe en una t3.small (2 GB)
+# para demo, ideal t3.medium (4 GB) para producción liviana.
 services:
-  servicio-gateway:
-    build:
-      context: ./servicio-gateway
-    container_name: pedidos360-servicio-gateway
-    ports:
-      - "9000:8080"
-    environment:
-      SERVER_PORT: "8080"
-      CORS_ALLOWED_ORIGINS: "${FRONTEND_ORIGIN:-http://localhost:5173}"
-      AUTH_SERVICE_URL: "http://servicio-usuarios:8080"
-      PRODUCTOS_SERVICE_URL: "http://servicio-productos:8080"
-      PEDIDOS_SERVICE_URL: "http://servicio-pedidos:8080"
-    depends_on:
-      - servicio-usuarios
-      - servicio-productos
-      - servicio-pedidos
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/actuator/health"]
-      interval: 10s
-      timeout: 3s
-      retries: 5
-
   servicio-productos:
     build:
       context: ./servicio-productos
@@ -41,6 +23,7 @@ services:
       - "8081:8080"
     environment:
       SERVER_PORT: "8080"
+      JAVA_OPTS: "${JAVA_OPTS:--Xms128m -Xmx384m}"
       CORS_ALLOWED_ORIGINS: "${FRONTEND_ORIGIN:-http://localhost:5173}"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/actuator/health"]
@@ -56,6 +39,7 @@ services:
       - "8082:8080"
     environment:
       SERVER_PORT: "8080"
+      JAVA_OPTS: "${JAVA_OPTS:--Xms128m -Xmx384m}"
       CORS_ALLOWED_ORIGINS: "${FRONTEND_ORIGIN:-http://localhost:5173}"
       # JWT de Microsoft Entra ID / Azure AD.
       JWT_ENABLED: "true"
@@ -84,6 +68,7 @@ services:
       - "8083:8080"
     environment:
       SERVER_PORT: "8080"
+      JAVA_OPTS: "${JAVA_OPTS:--Xms128m -Xmx384m}"
       CORS_ALLOWED_ORIGINS: "${FRONTEND_ORIGIN:-http://localhost:5173}"
       JWT_SECRET: "cambiar-en-produccion-secreto-compartido-32bytes"
       JWT_EMISOR: "pedidos360-usuarios"

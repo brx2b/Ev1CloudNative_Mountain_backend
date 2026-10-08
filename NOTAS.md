@@ -135,14 +135,14 @@ Lo que sigue es infraestructura (Azure + AWS), no código:
 
 ## 8. Estado del Backend (completado y verificado)
 
-Backend **Maven multi-módulo** con 4 microservicios. Código en **español**, JSON en inglés.
+Backend **Maven multi-módulo** con 3 microservicios (el gateway Spring se eliminó:
+el entrypoint único es **AWS API Gateway**). Código en **español**, JSON en inglés.
 
 | Microservicio | Rutas | Puerto | Seguridad |
 |---|---|---|---|
 | `servicio-productos` | `GET /products`, `GET /products/{id}` | 8081 | Pública |
 | `servicio-pedidos` | `POST /orders`, `GET /orders`, `GET /orders/{id}` | 8082 | JWT local HS256 + Azure JWKS |
 | `servicio-usuarios` | `POST /auth/registro`, `POST /auth/ingreso`, `GET /users` | 8083 | Pública (emite JWT) |
-| `servicio-gateway` | **Entry point único** — enruta todo a los MS internos | 9000 | Propaga Authorization |
 
 Estructura:
 
@@ -173,27 +173,28 @@ servicio-usuarios/
       ├── controlador/ControladorAutenticacion, ControladorUsuarios, ControladorRegistroApi
       ├── seguridad/EmisorJwt, PropiedadesAutenticacion, RegistroEndpoints
       └── configuracion/FiltroCors
-servicio-gateway/
-  └── com.mountainbackend.gateway
-      ├── ServicioGatewayApplication
-      ├── proxy/FiltroProxyApi  (RestClient: /auth → usuarios, /products → productos, /orders → pedidos)
-      ├── controlador/ControladorRegistroApi  (consolida /api/endpoints de todos los MS)
-      └── configuracion/FiltroCors, PropiedadesGateway
 ```
+
+> El ex `servicio-gateway` se eliminó del repo: su rol lo cumple AWS API
+> Gateway (`/products` → :8081, `/auth/*` → :8083, `/orders` → :8082).
 
 - **JWT local**: `servicio-usuarios` firma HS256 con `app.auth.secreto`; `servicio-pedidos` valida con `app.seguridad.local-secreto`.
 - **JWT Azure** (opcional): con `JWT_LOCAL_ENABLED=false` + `JWT_ENABLED=true`, valida JWKS RS256.
-- **Registro de endpoints**: `GET /api/endpoints` en cada servicio; el gateway consolida todos.
+- **Registro de endpoints**: `GET /api/endpoints` en cada servicio (útil para
+  verificar cada integración del API Gateway).
 - **Health checks**: `/actuator/health` en todos los servicios.
+- **Memoria**: cada contenedor limita su JVM con `JAVA_OPTS` (default
+  `-Xms128m -Xmx384m` en `docker-compose.yml`). Los 3 MS caben en una sola
+  EC2 `t3.small` (2 GB) para demo; `t3.medium` (4 GB) para uso real.
 
 Verificación realizada:
-- `mvn clean package` → **BUILD SUCCESS**, 17 tests (productos 4, pedidos 4, usuarios 6, gateway 3).
-- `GET /products` → 200 con 8 productos.
-- `POST /auth/registro` → 201 con JWT + datos usuario.
-- `POST /auth/ingreso` → 201 con JWT.
-- `POST /orders` con Bearer token → 201 con pedido + email del JWT.
-- `POST /orders` sin token → **401**.
-- `GET /api/endpoints` (gateway) → JSON con inventario consolidado de los 3 MS.
+- `mvn clean package` → **BUILD SUCCESS**, 21 tests (productos 7, pedidos 8, usuarios 6).
+- `GET :8081/products` → 200 con 8 productos.
+- `POST :8083/auth/registro` → 201 con JWT + datos usuario.
+- `POST :8083/auth/ingreso` → 201 con JWT.
+- `POST :8082/orders` con Bearer token → 201 con pedido + email del JWT.
+- `POST :8082/orders` sin token → **401**.
+- `GET /api/endpoints` (cada servicio) → JSON con su inventario de rutas.
 
 ## 9. Cómo correr el backend
 
@@ -206,35 +207,34 @@ mvn clean package
 Luego, opción A (directo) o B (Docker Compose):
 
 ```bash
-# A) 4 procesos (el gateway es el entrypoint del frontend)
+# A) 3 procesos (en AWS los alcanza el API Gateway por :8081/:8082/:8083)
 java -jar servicio-productos/target/servicio-productos-0.0.1-SNAPSHOT.jar   # :8081
 java -jar servicio-pedidos/target/servicio-pedidos-0.0.1-SNAPSHOT.jar       # :8082
 java -jar servicio-usuarios/target/servicio-usuarios-0.0.1-SNAPSHOT.jar     # :8083
-java -jar servicio-gateway/target/servicio-gateway-0.0.1-SNAPSHOT.jar       # :9000
 
 # B) Docker Compose (requiere haber empaquetado antes)
 docker compose up --build
 ```
 
-Prueba rápida (todo vía el gateway en :9000):
+Prueba rápida (cada servicio directo en su puerto):
 
 ```bash
 # Catálogo
-curl http://localhost:9000/products
+curl http://localhost:8081/products
 
 # Login con usuario demo
-curl -X POST http://localhost:9000/auth/ingreso \
+curl -X POST http://localhost:8083/auth/ingreso \
   -H "Content-Type: application/json" \
   -d '{"email":"demo@summitlab.cl","password":"demo1234"}'
 
 # Pedido con token (reemplaza TOKEN con el del login)
-curl -X POST http://localhost:9000/orders \
+curl -X POST http://localhost:8082/orders \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer TOKEN" \
   -d '{"items":[{"productId":1,"name":"Alpha SV Jacket","price":899,"quantity":2}]}'
 
 # Registro de endpoints
-curl http://localhost:9000/api/endpoints
+curl http://localhost:8081/api/endpoints
 ```
 
 > OJO con Windows PowerShell: escapar el JSON (o usar un archivo con `--data-binary @archivo.json`).
@@ -259,19 +259,19 @@ El `servicio-pedidos` soporta validación JWKS de Azure como **doble capa** (ade
 
 ## 11. Conexión con AWS (producción)
 
-En producción el `servicio-gateway` se reemplaza por **AWS API Gateway** (o se despliega como sidecar).
+El entrypoint público es **AWS API Gateway** (sin gateway Spring):
 
 1. Build de imágenes:
    ```bash
    docker build -t pedidos360/servicio-productos:latest servicio-productos/
    docker build -t pedidos360/servicio-pedidos:latest servicio-pedidos/
    docker build -t pedidos360/servicio-usuarios:latest servicio-usuarios/
-   docker build -t pedidos360/servicio-gateway:latest servicio-gateway/
    ```
-2. Subir a **ECR**, crear **Task Definitions** en **ECS** (Fargate):
-   - `SERVER_PORT=8080`, health check `GET /actuator/health`.
-3. **API Gateway** en AWS enruta: `/products` → productos, `/auth/*` → usuarios,
-   `/orders` → pedidos (con JWT Authorizer si se usa Azure).
+2. Subir a **ECR**, crear **Task Definitions** en **ECS** (Fargate) o correr
+   `docker compose` en **una sola EC2** (`t3.small` demo, `t3.medium` real):
+   - `SERVER_PORT=8080`, `JAVA_OPTS=-Xms128m -Xmx384m`, health check `GET /actuator/health`.
+3. **API Gateway** en AWS enruta: `/products` → :8081 productos, `/auth/*` →
+   :8083 usuarios, `/orders` → :8082 pedidos (con JWT Authorizer si se usa Azure).
 4. Frontend `.env`:
    ```
    VITE_API_BASE_URL=https://TU-APIGATEWAY.execute-api.REGION.amazonaws.com/prod
@@ -280,12 +280,13 @@ En producción el `servicio-gateway` se reemplaza por **AWS API Gateway** (o se 
 
 ## 12. Checklist de entregables
 
-- [x] Backend 4 microservicios: productos, pedidos, usuarios, gateway — BUILD SUCCESS, 17 tests.
-- [x] Gateway como entrypoint único: enruta `/auth/*`, `/products`, `/orders`, `/api/endpoints`.
+- [x] Backend 3 microservicios: productos, pedidos, usuarios — BUILD SUCCESS, 21 tests.
+- [x] Gateway Spring eliminado: el entrypoint único es AWS API Gateway.
+- [x] `JAVA_OPTS` limita cada JVM: los 3 MS caben en una EC2 `t3.small`.
 - [x] JWT local HS256: usuarios firma, pedidos valida.
-- [x] Registro de endpoints: `GET /api/endpoints` consolidado en gateway.
+- [x] Registro de endpoints: `GET /api/endpoints` en cada servicio.
 - [x] Frontend: `authService.register/login/logout` + Bearer token automático.
 - [x] Botones "Ingresar" y "Crear cuenta" abren AuthModal (login/registro).
 - [x] Checkout sin token muestra toast + abre modal de login.
 - [ ] Azure: App Registration + JWT JWKS (solo si se quiere producción con Azure AD).
-- [ ] AWS: ECR + ECS + API Gateway (reemplaza `servicio-gateway` en deploy).
+- [ ] AWS: ECR + ECS/EC2 + API Gateway (`/products` → :8081, `/auth/*` → :8083, `/orders` → :8082).

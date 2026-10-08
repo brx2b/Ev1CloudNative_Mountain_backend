@@ -1,72 +1,39 @@
 # SummitLab - Backend Cloud-Native
 
-Backend de la tienda de equipamiento de montaña SummitLab. Es un proyecto Maven multi-módulo con cuatro servicios Spring Boot y un gateway HTTP.
+Backend de la tienda de equipamiento de montaña SummitLab. Es un proyecto Maven multi-módulo con tres microservicios Spring Boot. El gateway es **AWS API Gateway** (el antiguo `servicio-gateway` Spring se eliminó).
 
 ## Propósito y flujo
 
-El frontend solo debe llamar al gateway. Las URLs internas se configuran en el gateway mediante variables de entorno:
+El frontend solo llama a AWS API Gateway, que enruta a cada microservicio:
 
 ```text
-Frontend -> gateway:9000 -> productos:8080
-                         -> usuarios:8080
-                         -> pedidos:8080
+Frontend -> AWS API Gateway -> productos:8080 (/products)
+                             -> usuarios:8080  (/auth/*)
+                             -> pedidos:8080   (/orders)
 ```
-
-En producción, AWS API Gateway puede ser el punto público y reemplazar al gateway Spring, pero el frontend sigue usando un único endpoint público.
 
 | Servicio             | Función            | Puerto local | Rutas principales                           |
 | -------------------- | ------------------ | -----------: | ------------------------------------------- |
 | `servicio-productos` | Catálogo           |         8081 | `GET /products`, `GET /products/{id}`       |
 | `servicio-pedidos`   | Pedidos            |         8082 | `POST/GET /orders`                          |
 | `servicio-usuarios`  | Registro e ingreso |         8083 | `POST /auth/registro`, `POST /auth/ingreso` |
-| `servicio-gateway`   | Enrutamiento único |         9000 | `/products`, `/auth/*`, `/orders`           |
 
 ## Dónde colocar las URLs de los microservicios
 
-### Docker Compose
-
-Las URLs internas están en `docker-compose.yml`, dentro de `servicio-gateway`:
-
-```yaml
-environment:
-  AUTH_SERVICE_URL: "http://servicio-usuarios:8080"
-  PRODUCTOS_SERVICE_URL: "http://servicio-productos:8080"
-  PEDIDOS_SERVICE_URL: "http://servicio-pedidos:8080"
-```
-
-Estos nombres funcionan porque Compose crea una red interna. No los cambies por `localhost` dentro de los contenedores: `localhost` apuntaría al propio gateway.
-
-### Ejecución directa con JARs
-
-Los valores por defecto están en `servicio-gateway/src/main/resources/application.properties`:
-
-```properties
-app.servicios.auth-url=${AUTH_SERVICE_URL:http://localhost:8083}
-app.servicios.productos-url=${PRODUCTOS_SERVICE_URL:http://localhost:8081}
-app.servicios.pedidos-url=${PEDIDOS_SERVICE_URL:http://localhost:8082}
-```
-
-También pueden sobrescribirse al iniciar el gateway:
-
-```powershell
-$env:AUTH_SERVICE_URL="http://127.0.0.1:8083"
-$env:PRODUCTOS_SERVICE_URL="http://127.0.0.1:8081"
-$env:PEDIDOS_SERVICE_URL="http://127.0.0.1:8082"
-java -jar servicio-gateway/target/servicio-gateway-0.0.1-SNAPSHOT.jar
-```
+Ya no hay gateway Spring que configurar: cada microservicio es autónomo y
+escucha en el puerto `8080` de su contenedor (publicados como `8081/8082/8083`
+en `docker-compose.yml` para desarrollo local).
 
 ### EC2 con Docker Compose
 
-Si los cuatro contenedores corren en la misma EC2, conserva las URLs internas de Compose. Solo publica el gateway:
+Si los tres contenedores corren en la misma EC2, AWS API Gateway los alcanza
+por integración HTTP directa a `http://IP-O-DNS-EC2:8081|8082|8083` según la
+ruta (`/products` → 8081, `/auth/*` → 8083, `/orders` → 8082).
 
-```yaml
-ports:
-  - "9000:8080"
-```
-
-Los puertos `8081`, `8082` y `8083` pueden quitarse de `ports` para que no sean accesibles desde Internet. El frontend usará únicamente `http://DNS-PUBLICO-EC2:9000`.
-
-En una arquitectura distribuida, sustituye las variables del gateway por DNS privados, IPs privadas, Cloud Map o load balancers internos. No uses una IP pública para comunicación entre microservicios si están en la misma VPC.
+En una arquitectura distribuida (uno o más EC2, ECS o ALB), cada ruta del API
+Gateway apunta a su destino correspondiente (DNS privados, Cloud Map o load
+balancers internos). No uses una IP pública para comunicación entre
+microservicios si están en la misma VPC.
 
 ## Autenticación y propósito del token
 
@@ -132,20 +99,19 @@ En Windows:
 docker compose up --build
 ```
 
-URLs locales:
+URLs locales (cada servicio directo, sin gateway):
 
 ```text
-Gateway:  http://localhost:9000
 Productos: http://localhost:8081
 Pedidos:   http://localhost:8082
 Usuarios:  http://localhost:8083
 ```
 
-Pruebas rápidas a través del gateway:
+Pruebas rápidas por servicio:
 
 ```bash
-curl http://localhost:9000/products
-curl -X POST http://localhost:9000/auth/ingreso \
+curl http://localhost:8081/products
+curl -X POST http://localhost:8083/auth/ingreso \
   -H "Content-Type: application/json" \
   -d '{"email":"demo@summitlab.cl","password":"demo1234"}'
 ```
@@ -154,39 +120,54 @@ curl -X POST http://localhost:9000/auth/ingreso \
 
 1. Crear una instancia EC2 con Docker instalado y asignar un Security Group.
 2. Permitir SSH solo desde la IP administrativa.
-3. Permitir `80/443` si habrá Nginx o reverse proxy.
-4. Permitir `9000` solo si el frontend accederá directamente al gateway.
-5. No exponer `8081`, `8082` ni `8083` públicamente.
-6. Clonar el repositorio y configurar secretos mediante variables de entorno.
-7. Construir y levantar los servicios:
+3. Permitir `8081`, `8082` y `8083` desde Internet (los necesita AWS API
+   Gateway por integración HTTP) o, mejor, desde la VPC si usas VPC Link.
+4. Clonar el repositorio y configurar secretos mediante variables de entorno.
+5. Construir y levantar los servicios:
 
 ```bash
 ./mvnw clean package -DskipTests
 docker compose up -d --build
 docker compose ps
-docker compose logs -f servicio-gateway
+docker compose logs -f servicio-productos
 ```
 
-Cambia `CORS_ALLOWED_ORIGINS` por el dominio real del frontend. Si usas Nginx, publica `/api` hacia `http://127.0.0.1:9000` y configura en el frontend:
+### Memoria (una sola EC2 basta)
+
+No necesitas otro EC2: los 3 microservicios caben en una sola instancia.
+Cada JVM se limita con `JAVA_OPTS` (default en `docker-compose.yml`:
+`-Xms128m -Xmx384m`, sobrescribible con la variable `JAVA_OPTS`):
+
+| Instancia   | RAM  | Veredicto                                              |
+| ----------- | ---- | ------------------------------------------------------ |
+| `t3.small`  | 2 GB | Suficiente para demo/Ev1 (~1.2-1.5 GB los 3 MS + SO).  |
+| `t3.medium` | 4 GB | Recomendada para uso real o picos de tráfico.          |
+| 3 × `t3.small` | 2 GB c/u | Solo si quieres aislamiento total por servicio (3× costo). |
+
+(Ojo: la familia `m3` no tiene tamaño "small" — el mínimo es `m3.medium`,
+generación 2013. Para este proyecto usa `t3.small`/`t3.medium`, más baratos
+y modernos. Alternativa sin administrar EC2: ECS Fargate, 0.25 vCPU + 0.5 GB
+por tarea.)
+
+Cambia `CORS_ALLOWED_ORIGINS` por el dominio real del frontend. El frontend
+usa únicamente la URL de AWS API Gateway:
 
 ```env
-VITE_API_BASE_URL=https://tu-dominio.com/api
+VITE_API_BASE_URL=https://tu-api-gateway.execute-api.REGION.amazonaws.com/prod
 VITE_USE_MOCK=false
 ```
 
-Sin Nginx, usa directamente `http://DNS-EC2:9000` como valor base.
-
 ## AWS API Gateway
 
-API Gateway es el endpoint público, control de CORS, throttling y punto donde puede aplicarse el JWT Authorizer de Entra ID. Debe enrutar:
+API Gateway es el endpoint público, control de CORS, throttling y punto donde se aplica el JWT Authorizer de Entra ID. Debe enrutar:
 
-| Ruta pública                   | Destino              |
-| ------------------------------ | -------------------- |
-| `/products`                    | `servicio-productos` |
-| `/auth/{proxy+}`               | `servicio-usuarios`  |
-| `/orders` y `/orders/{proxy+}` | `servicio-pedidos`   |
+| Ruta pública                   | Destino              | Integración HTTP (1 EC2)   |
+| ------------------------------ | -------------------- | -------------------------- |
+| `/products`                    | `servicio-productos` | `http://EC2:8081/products` |
+| `/auth/{proxy+}`               | `servicio-usuarios`  | `http://EC2:8083/auth/{proxy}` |
+| `/orders` y `/orders/{proxy+}` | `servicio-pedidos`   | `http://EC2:8082/orders...` |
 
-Los destinos pueden ser una EC2 mediante HTTP integration, un Application Load Balancer interno o servicios ECS. El frontend solo recibe la URL de API Gateway:
+Los destinos pueden ser una EC2 mediante integración HTTP, un Application Load Balancer interno o servicios ECS. El frontend solo recibe la URL de API Gateway:
 
 ```env
 VITE_API_BASE_URL=https://API_ID.execute-api.REGION.amazonaws.com/prod
@@ -196,11 +177,13 @@ No coloques las URLs privadas de los microservicios en el `.env` del frontend.
 
 ## Salud y observabilidad
 
-Cada servicio expone `GET /actuator/health` y `GET /api/endpoints`. El gateway consolida el inventario en `GET /api/endpoints`.
+Cada servicio expone `GET /actuator/health` y `GET /api/endpoints` (inventario
+de sus propias rutas, útil para verificar cada integración del API Gateway).
 
 ## Notas de producción
 
 - Los repositorios actuales viven en memoria; para persistencia usar DynamoDB, RDS u otra base de datos administrada.
 - Cambiar todos los secretos de ejemplo antes de exponer la EC2.
-- Configurar HTTPS, preferentemente mediante Application Load Balancer, Nginx o API Gateway.
-- Mantener el gateway como único acceso del frontend a los microservicios.
+- Configurar HTTPS: el tráfico navegador → API Gateway ya va por HTTPS; entre
+  API Gateway y la EC2 usa VPC Link o restringe el Security Group.
+- El frontend nunca llama a los microservicios directo: todo pasa por API Gateway.
