@@ -176,9 +176,13 @@ public class FiltroValidacionJwt extends OncePerRequestFilter {
 		}
 
 		KeyType tipoClave = JWSAlgorithm.Family.RSA.contains(algoritmo) ? KeyType.RSA : KeyType.EC;
+		// Solo se filtra por tipo de clave + kid: el JWKS de Azure no trae
+		// campo "alg" en sus llaves y filtrar por algoritmo las descarta a
+		// todas ("No se encontró clave de verificación en el JWKS").
+		// La familia del algoritmo ya se validó arriba y cada llave se
+		// verifica con su verificador correspondiente (RSA/EC).
 		JWKMatcher.Builder coincidencia = new JWKMatcher.Builder()
-			.keyType(tipoClave)
-			.algorithm(algoritmo);
+			.keyType(tipoClave);
 		if (cabeceraJws.getKeyID() != null) {
 			coincidencia.keyID(cabeceraJws.getKeyID());
 		}
