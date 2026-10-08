@@ -30,13 +30,9 @@ Si los tres contenedores corren en la misma EC2, AWS API Gateway los alcanza
 por integración HTTP directa a `http://IP-O-DNS-EC2:8081|8082|8083` según la
 ruta (`/products` → 8081, `/auth/*` → 8083, `/orders` → 8082).
 
-Mientras no exista el API Gateway, el servicio `gateway-nginx` del compose
-publica un entrypoint temporal en `:9000` con el mismo ruteo
-(`/products`, `/auth/*`, `/orders`). El frontend lo usa así:
-
-```env
-VITE_API_BASE_URL=http://IP-PUBLICA-EC2:9000
-```
+Mientras no exista el API Gateway, el entrypoint es el nginx del EC2 frontend
+(misma VPC), que rutea `/api/*` directo a cada puerto (`8081/8082/8083`).
+En el SG del backend solo se abre `8081-8083` desde el SG del frontend.
 
 En una arquitectura distribuida (uno o más EC2, ECS o ALB), cada ruta del API
 Gateway apunta a su destino correspondiente (DNS privados, Cloud Map o load

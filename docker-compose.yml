@@ -11,30 +11,15 @@ version: "3.9"
 #   8082 -> servicio-pedidos
 #   8083 -> servicio-usuarios
 #
+# El entrypoint público es el nginx del EC2 frontend (misma VPC), que rutea
+# /api/* directo a estos puertos. No hay gateway en este compose.
+# En el SG solo abrir 8081-8083 desde el SG del frontend (nada al mundo).
+#
 # Memoria: cada JVM se limita con JAVA_OPTS (default -Xms128m -Xmx384m).
 # Con 3 servicios el consumo ronda 1.2-1.5 GB: cabe en una t3.small (2 GB)
 # para demo, ideal t3.medium (4 GB) para producción liviana.
 #
-# Entrypoint temporal :9000 (nginx) hasta crear el API Gateway de AWS:
-#   /products -> 8081, /auth/* -> 8083, /orders -> 8082
 services:
-  gateway-nginx:
-    image: nginx:1.27-alpine
-    container_name: pedidos360-gateway-nginx
-    ports:
-      - "9000:80"
-    volumes:
-      - ./gateway-nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
-    depends_on:
-      - servicio-usuarios
-      - servicio-productos
-      - servicio-pedidos
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost/healthz"]
-      interval: 10s
-      timeout: 3s
-      retries: 5
-
   servicio-productos:
     build:
       context: ./servicio-productos
