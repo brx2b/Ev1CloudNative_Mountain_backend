@@ -2,6 +2,8 @@ package com.mountainbackend.pedidos.mensajeria;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.amqp.core.Message;
+import org.springframework.amqp.core.MessageProperties;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -30,8 +32,13 @@ public class PublicadorPedidos {
 
 	public void publicarPedidoCreado(EventoPedidoCreado evento) {
 		try {
-			String json = objectMapper.writeValueAsString(evento);
-			rabbitTemplate.convertAndSend(exchange, routingKey, json);
+			// Bytes crudos text/plain: si se usa convertAndSend con el
+			// conversor Jackson, el String se re-serializa escapado y los
+			// consumidores lo ven vacío.
+			byte[] cuerpo = objectMapper.writeValueAsBytes(evento);
+			MessageProperties props = new MessageProperties();
+			props.setContentType(MessageProperties.CONTENT_TYPE_TEXT_PLAIN);
+			rabbitTemplate.send(exchange, routingKey, new Message(cuerpo, props));
 			log.info("Evento pedido.creado publicado para {}", evento.orderId());
 		} catch (Exception ex) {
 			log.warn("No se pudo publicar pedido.creado para {}: {}",
