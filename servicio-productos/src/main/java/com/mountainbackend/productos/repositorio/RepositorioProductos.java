@@ -5,6 +5,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Repository;
 
 import com.mountainbackend.productos.dto.SolicitudProducto;
@@ -22,9 +23,13 @@ import com.mountainbackend.productos.modelo.Producto;
 public class RepositorioProductos {
 
 	private final Map<Long, Producto> productos = new ConcurrentHashMap<>();
+	private final Map<Long, Integer> stock = new ConcurrentHashMap<>();
+	private final int stockInicial;
 
-	public RepositorioProductos() {
+	public RepositorioProductos(@Value("${app.stock.inicial:50}") int stockInicial) {
+		this.stockInicial = stockInicial;
 		sembrarCatalogo();
+		productos.keySet().forEach(id -> stock.put(id, stockInicial));
 	}
 
 	public List<Producto> listarTodos() {
@@ -33,6 +38,25 @@ public class RepositorioProductos {
 
 	public Optional<Producto> buscarPorId(long id) {
 		return Optional.ofNullable(productos.get(id));
+	}
+
+	/** Stock actual (para evidencia de descuento async por compra). */
+	public int obtenerStock(long id) {
+		return stock.getOrDefault(id, 0);
+	}
+
+	/**
+	 * Descuenta stock de forma atómica (nunca bajo cero). Devuelve el
+	 * stock restante, o -1 si el producto no existe.
+	 */
+	public int descontarStock(long id, int cantidad) {
+		if (!productos.containsKey(id) || cantidad < 1) {
+			return -1;
+		}
+		return stock.compute(id, (clave, actual) -> {
+			int base = actual != null ? actual : stockInicial;
+			return Math.max(0, base - cantidad);
+		});
 	}
 
 	public Producto guardar(SolicitudProducto solicitud) {
@@ -51,6 +75,7 @@ public class RepositorioProductos {
 			obligatorioONulo(solicitud.brand()),
 			solicitud.colors() != null ? solicitud.colors() : List.of());
 		productos.put(id, producto);
+		stock.put(id, stockInicial);
 		return producto;
 	}
 

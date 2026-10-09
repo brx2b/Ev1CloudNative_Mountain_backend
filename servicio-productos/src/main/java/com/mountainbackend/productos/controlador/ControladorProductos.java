@@ -23,6 +23,7 @@ import com.mountainbackend.productos.repositorio.RepositorioProductos;
  * Rutas públicas del catálogo expuestas a través del AWS API Gateway.
  * GET  /products      -> lista completa (el frontend acepta array o { products: [] })
  * GET  /products/{id} -> detalle unitario
+ * GET  /products/{id}/stock -> stock actual (evidencia del descuento async)
  * POST /products      -> crea un producto y devuelve 201 con el recurso
  */
 @RestController
@@ -45,6 +46,17 @@ public class ControladorProductos {
 		return repositorio.buscarPorId(id)
 			.map(ResponseEntity::ok)
 			.orElseGet(() -> ResponseEntity.notFound().build());
+	}
+
+	@GetMapping("/{id}/stock")
+	public ResponseEntity<Map<String, Object>> obtenerStock(@PathVariable("id") long id) {
+		if (repositorio.buscarPorId(id).isEmpty()) {
+			return ResponseEntity.notFound().build();
+		}
+		Map<String, Object> cuerpo = new LinkedHashMap<>();
+		cuerpo.put("productId", id);
+		cuerpo.put("stock", repositorio.obtenerStock(id));
+		return ResponseEntity.ok(cuerpo);
 	}
 
 	@PostMapping

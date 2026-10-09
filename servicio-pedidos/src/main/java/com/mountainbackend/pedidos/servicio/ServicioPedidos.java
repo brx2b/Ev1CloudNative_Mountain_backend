@@ -11,6 +11,8 @@ import java.util.concurrent.atomic.AtomicLong;
 import org.springframework.stereotype.Service;
 
 import com.mountainbackend.pedidos.dto.SolicitudPedido;
+import com.mountainbackend.pedidos.mensajeria.EventoPedidoCreado;
+import com.mountainbackend.pedidos.mensajeria.PublicadorPedidos;
 import com.mountainbackend.pedidos.modelo.LineaPedido;
 import com.mountainbackend.pedidos.modelo.Pedido;
 import com.mountainbackend.pedidos.modelo.TotalesPedido;
@@ -25,6 +27,11 @@ public class ServicioPedidos {
 
 	private final Map<String, Pedido> pedidos = new ConcurrentHashMap<>();
 	private final AtomicLong secuencia = new AtomicLong(100_000);
+	private final PublicadorPedidos publicador;
+
+	public ServicioPedidos(PublicadorPedidos publicador) {
+		this.publicador = publicador;
+	}
 
 	public Pedido crear(SolicitudPedido solicitud, String correoCliente, String nombreCliente) {
 		List<SolicitudPedido.LineaSolicitud> lineas = solicitud != null ? solicitud.getItems() : null;
@@ -60,6 +67,15 @@ public class ServicioPedidos {
 			List.copyOf(items),
 			new TotalesPedido(cantidadTotal, subtotal));
 		pedidos.put(id, pedido);
+		// Evento async: stock, notificaciones y envíos. No bloquea el 201.
+		publicador.publicarPedidoCreado(new EventoPedidoCreado(
+			id,
+			correoCliente,
+			nombreCliente,
+			items.stream()
+				.map(item -> new EventoPedidoCreado.ItemPedidoCreado(item.productId(), item.quantity()))
+				.toList(),
+			subtotal));
 		return pedido;
 	}
 
