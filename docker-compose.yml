@@ -10,16 +10,36 @@ version: "3.9"
 #   8081 -> servicio-productos
 #   8082 -> servicio-pedidos
 #   8083 -> servicio-usuarios
+#   5672 -> rabbitmq (AMQP, solo VPC interna)
+#   15672 -> rabbitmq management (solo túnel SSH, no abrir en SG)
 #
 # El entrypoint público es el nginx del EC2 frontend (misma VPC), que rutea
 # /api/* directo a estos puertos. No hay gateway en este compose.
-# En el SG solo abrir 8081-8083 desde el SG del frontend (nada al mundo).
+# En el SG solo abrir 8081-8083 desde el SG del frontend (nada al mundo)
+# y 5672 desde el SG del frontend + SG del backend-2 (sus MS consumen colas).
 #
 # Memoria: cada JVM se limita con JAVA_OPTS (default -Xms128m -Xmx384m).
-# Con 3 servicios el consumo ronda 1.2-1.5 GB: cabe en una t3.small (2 GB)
-# para demo, ideal t3.medium (4 GB) para producción liviana.
+# Con 3 servicios el consumo ronda 1.2-1.5 GB + ~250 MB de RabbitMQ:
+# cabe en una t3.small (2 GB) para demo, ideal t3.medium (4 GB) para
+# producción liviana.
 #
 services:
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: pedidos360-rabbitmq
+    restart: unless-stopped
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: "${RABBITMQ_USER:-pedidos360}"
+      RABBITMQ_DEFAULT_PASS: "${RABBITMQ_PASS:-cambiar-en-produccion}"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
   servicio-productos:
     build:
       context: ./servicio-productos
