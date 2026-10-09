@@ -23,7 +23,7 @@ import com.mountainbackend.productos.repositorio.RepositorioProductos;
 @Configuration
 public class ConsumidorStock {
 
-	public static final String COLA_PEDIDOS_CREADOS = "pedidos.creados";
+	public static final String COLA_STOCK = "pedidos.creados.stock";
 
 	private static final Logger log = LoggerFactory.getLogger(ConsumidorStock.class);
 
@@ -46,16 +46,16 @@ public class ConsumidorStock {
 	}
 
 	@Bean
-	public Queue colaPedidosCreados() {
-		return new Queue(COLA_PEDIDOS_CREADOS, true);
+	public Queue colaStock() {
+		return new Queue(COLA_STOCK, true);
 	}
 
 	@Bean
-	public Binding bindingPedidosCreados(DirectExchange exchangePedidos, Queue colaPedidosCreados) {
-		return BindingBuilder.bind(colaPedidosCreados).to(exchangePedidos).with(routingKey);
+	public Binding bindingStock(DirectExchange exchangePedidos, Queue colaStock) {
+		return BindingBuilder.bind(colaStock).to(exchangePedidos).with(routingKey);
 	}
 
-	@RabbitListener(queues = COLA_PEDIDOS_CREADOS)
+	@RabbitListener(queues = COLA_STOCK)
 	public void alPedidoCreado(String json) {
 		try {
 			JsonNode evento = objectMapper.readTree(json);
