@@ -14,7 +14,6 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-
 /**
  * Topología RabbitMQ de pedidos (declaración idempotente: los demás
  * microservicios declaran lo mismo). Exchange duradero + cola duradera
@@ -51,6 +50,11 @@ public class ConfiguracionMensajeria {
 	@Bean
 	public Jackson2JsonMessageConverter conversorJson() {
 		return new Jackson2JsonMessageConverter();
+	}
+
+	@Bean
+	public ObjectMapper objectMapper() {
+		return new ObjectMapper();
 	}
 
 	@Bean

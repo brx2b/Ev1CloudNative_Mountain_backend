@@ -13,6 +13,7 @@ import org.springframework.context.annotation.Configuration;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mountainbackend.productos.repositorio.RepositorioProductos;
 
 /**
@@ -53,6 +54,11 @@ public class ConsumidorStock {
 	@Bean
 	public Binding bindingPedidosCreados(DirectExchange exchangePedidos, Queue colaPedidosCreados) {
 		return BindingBuilder.bind(colaPedidosCreados).to(exchangePedidos).with(routingKey);
+	}
+
+	@Bean
+	public ObjectMapper objectMapper() {
+		return new ObjectMapper();
 	}
 
 	@RabbitListener(queues = COLA_PEDIDOS_CREADOS)
