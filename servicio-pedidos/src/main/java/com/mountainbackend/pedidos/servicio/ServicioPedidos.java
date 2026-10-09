@@ -73,7 +73,8 @@ public class ServicioPedidos {
 			correoCliente,
 			nombreCliente,
 			items.stream()
-				.map(item -> new EventoPedidoCreado.ItemPedidoCreado(item.productId(), item.quantity()))
+				.map(item -> new EventoPedidoCreado.ItemPedidoCreado(
+					item.productId(), item.name(), item.price(), item.quantity()))
 				.toList(),
 			subtotal));
 		return pedido;

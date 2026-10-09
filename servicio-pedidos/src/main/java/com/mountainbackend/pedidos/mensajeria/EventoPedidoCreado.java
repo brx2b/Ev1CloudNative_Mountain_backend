@@ -18,6 +18,8 @@ public record EventoPedidoCreado(
 
 	public record ItemPedidoCreado(
 			long productId,
+			String name,
+			int price,
 			int quantity) {
 	}
 }
