@@ -28,7 +28,7 @@ public class ConsumidorStock {
 	private static final Logger log = LoggerFactory.getLogger(ConsumidorStock.class);
 
 	private final RepositorioProductos repositorio;
-	private final ObjectMapper objectMapper;
+	private final ObjectMapper objectMapper = new ObjectMapper();
 
 	@Value("${app.mq.exchange:pedidos.eventos}")
 	private String exchange;
@@ -36,9 +36,8 @@ public class ConsumidorStock {
 	@Value("${app.mq.routing-pedido-creado:pedido.creado}")
 	private String routingKey;
 
-	public ConsumidorStock(RepositorioProductos repositorio, ObjectMapper objectMapper) {
+	public ConsumidorStock(RepositorioProductos repositorio) {
 		this.repositorio = repositorio;
-		this.objectMapper = objectMapper;
 	}
 
 	@Bean
@@ -54,11 +53,6 @@ public class ConsumidorStock {
 	@Bean
 	public Binding bindingPedidosCreados(DirectExchange exchangePedidos, Queue colaPedidosCreados) {
 		return BindingBuilder.bind(colaPedidosCreados).to(exchangePedidos).with(routingKey);
-	}
-
-	@Bean
-	public ObjectMapper objectMapper() {
-		return new ObjectMapper();
 	}
 
 	@RabbitListener(queues = COLA_PEDIDOS_CREADOS)
