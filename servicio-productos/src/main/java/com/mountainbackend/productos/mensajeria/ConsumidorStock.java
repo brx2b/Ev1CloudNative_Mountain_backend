@@ -2,60 +2,35 @@ package com.mountainbackend.productos.mensajeria;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.amqp.core.Binding;
-import org.springframework.amqp.core.BindingBuilder;
-import org.springframework.amqp.core.DirectExchange;
-import org.springframework.amqp.core.Queue;
-import org.springframework.amqp.rabbit.annotation.RabbitListener;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
+import org.springframework.kafka.annotation.KafkaListener;
+import org.springframework.stereotype.Component;
 
 import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mountainbackend.productos.repositorio.RepositorioProductos;
 
 /**
- * Consume pedido.creado y descuenta stock. Declara la misma topología
- * que pedidos (idempotente). El payload llega como String JSON.
+ * Consume pedidos.creados (topico Kafka en backend-3) y descuenta stock.
+ * groupId propio: como consumidor independiente recibe TODOS los eventos
+ * aunque otros servicios tambien consuman el mismo topico. El payload
+ * llega como String JSON; si es invalido solo se registra el fallo.
  */
-@Configuration
+@Component
 public class ConsumidorStock {
-
-	public static final String COLA_STOCK = "pedidos.creados.stock";
 
 	private static final Logger log = LoggerFactory.getLogger(ConsumidorStock.class);
 
 	private final RepositorioProductos repositorio;
 	private final ObjectMapper objectMapper = new ObjectMapper();
 
-	@Value("${app.mq.exchange:pedidos.eventos}")
-	private String exchange;
-
-	@Value("${app.mq.routing-pedido-creado:pedido.creado}")
-	private String routingKey;
-
 	public ConsumidorStock(RepositorioProductos repositorio) {
 		this.repositorio = repositorio;
 	}
 
-	@Bean
-	public DirectExchange exchangePedidos() {
-		return new DirectExchange(exchange, true, false);
-	}
-
-	@Bean
-	public Queue colaStock() {
-		return new Queue(COLA_STOCK, true);
-	}
-
-	@Bean
-	public Binding bindingStock(DirectExchange exchangePedidos, Queue colaStock) {
-		return BindingBuilder.bind(colaStock).to(exchangePedidos).with(routingKey);
-	}
-
-	@RabbitListener(queues = COLA_STOCK)
+	@KafkaListener(
+		topics = "${app.kafka.topic.pedidos:pedidos.creados}",
+		groupId = "productos-stock",
+		containerFactory = "kafkaListenerContainerFactory")
 	public void alPedidoCreado(String json) {
 		try {
 			JsonNode evento = objectMapper.readTree(json);
