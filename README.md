@@ -2,6 +2,13 @@
 
 Backend de la tienda de equipamiento de montaña SummitLab. Es un proyecto Maven multi-módulo con tres microservicios Spring Boot. El gateway es **AWS API Gateway** (el antiguo `servicio-gateway` Spring se eliminó).
 
+## Pendiente para la Evaluación 3 (resumen)
+
+- Migrar RabbitMQ a Kafka en `servicio-pedidos` (tópico `pedidos.creados`) y en los consumidores de parte2; validar tests y docker-compose.
+- Integrar en el frontend (`Ev1CloudNative_Mountain`) los endpoints de pagos y recomendaciones de parte3.
+- Actualizar `NOTAS.md` y READMEs con el estado final, pendientes y evidencia para la defensa (Kafka, fraude, WebPay, recomendaciones).
+- Verificar flujo E2E con Docker Compose y luego en AWS (guía en parte3 `docs/DESPLIEGUE_AWS.md`).
+
 ## Propósito y flujo
 
 El frontend solo llama a AWS API Gateway, que enruta a cada microservicio:
